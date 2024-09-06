@@ -1,0 +1,1037 @@
+celsius=37
+
+single_cell=0   // switch button : 0 for population activation curve, 1 for single PC I/O
+nPC = 500
+nBC = 5 // Basis of 1% of neurons
+nAxon=120
+connection_probability = 0.85//0.85
+sweep_to_record_at = 0
+input_to_record_at = 0
+BCnumber=1 // the cell that will specifically be recorded
+PCnumber=7 // the cell that will specifically be recorded
+PCclamped=20 // the cell that will specifically be clamped
+
+
+stoptime=400
+tstop=stoptime
+dt = 0.1
+
+Axon_probability = 0 //defines the percentage of the axon that will be activated
+
+//Change AP threshold of both cells? around -40 for GC (https://www.neuroelectro.org/neuron/66/) and around -50 for IN (https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7083295/), would help with the difference of timing
+   
+   
+   Ek_principalneuron = -90
+   gna_principalneuron = 0.01
+   shift_principalneuron = 13
+   ena_principalneuron = 55
+   gkdr_principalneuron = 0.015
+   gka_principalneuron = 0
+   gkm_principalneuron = 0
+   ARes_principalneuron = 194		// ohm cm	- axial resistance
+   MCap_principalneuron = 1.01	// uF/cm^2	- membrane capacitance
+   Rm_principalneuron = 31000//31000		// ohm cm^2 	- membrane resistance  
+   Vrest_principalneuron = -75
+
+
+
+
+begintemplate excitatory_cell			// template of a excitatory neuron
+
+public  soma
+
+external Ek_principalneuron, ARes_principalneuron,MCap_principalneuron,Rm_principalneuron, Vrest_principalneuron,gna_principalneuron, shift_principalneuron, ena_principalneuron, gkdr_principalneuron,gka_principalneuron, gkm_principalneuron
+
+
+objref pre_list, CC		
+
+create soma
+
+proc init() 	{
+   pre_list = new List()
+   soma { 
+	// define geomtry
+	L = 40    // scaled so that Rinput of excitatory cells are around 1 to 2 times the Rinput of IN
+    diam = 40
+	nseg =1	
+	// define passive parameters
+ 	cm =  MCap_principalneuron
+    Ra =  ARes_principalneuron
+	// insert pas
+	insert pas 
+    e_pas=Vrest_principalneuron 
+    g_pas=1/Rm_principalneuron 
+
+	insert na3
+    gbar_na3 = gna_principalneuron*1
+    sh_na3 = shift_principalneuron/3
+    ena = ena_principalneuron
+    insert kdr
+    gkdrbar_kdr = gkdr_principalneuron*1
+    sh_kdr = shift_principalneuron/3
+    ek = Ek_principalneuron
+    insert kap
+    gkabar_kap = gka_principalneuron
+    sh_kap = shift_principalneuron
+    insert km
+    gbar_km = gkm_principalneuron
+    sh_km=shift_principalneuron
+	
+	
+	
+	
+	
+	 }
+ 
+		}
+endtemplate excitatory_cell
+
+begintemplate inhibitory_cell // template of an interneuron
+public soma
+objref pre_list, CC
+external Ek_principalneuron, ARes_principalneuron,MCap_principalneuron,Rm_principalneuron, Vrest_principalneuron,gna_principalneuron, shift_principalneuron, ena_principalneuron, gkdr_principalneuron,gka_principalneuron, gkm_principalneuron
+create soma
+
+proc init() {
+    pre_list = new List()
+    soma {
+        // define geometry
+        diam= 36 //Adjust so that the input resistance of the interneuron is approximately 480 MOhms (Ledri et al, 2011)
+        L=36
+        nseg =1
+
+        // define passive parameters
+        cm = 1
+        Ra = 100
+
+        insert na3  
+        gbar_na3 = gna_principalneuron*1
+        sh_na3 = shift_principalneuron/3
+        ena = ena_principalneuron
+
+        insert kdr
+        gkdrbar_kdr = gkdr_principalneuron*1
+        sh_kdr = shift_principalneuron/3
+        ek = Ek_principalneuron
+
+        insert kap
+        gkabar_kap = gka_principalneuron
+        sh_kap = shift_principalneuron
+
+        insert km
+        gbar_km = gkm_principalneuron
+        sh_km=shift_principalneuron
+
+        insert pas 
+        e_pas=-67
+        g_pas= 1/20000 //based on the time constant of Iulia's measurement 240124, and double checked with Oláh et al 2020 (https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7269670/)
+    }
+}
+endtemplate inhibitory_cell
+
+
+
+// preparing everything outside of the loop
+objref PC_vec, BC_vec, IPSG_monosynaptic_current_vec, SEClamp_current_vec, EPSC_vec[nAxon], IPSC_vec[nBC], sum_EPSC_vec, sum_IPSC_vec
+	PC_vec = new Vector()
+	BC_vec = new Vector()
+	IPSG_monosynaptic_current_vec = new Vector()
+	SEClamp_current_vec = new Vector()
+	for i=0, nAxon-1 {EPSC_vec[i] = new Vector ()}
+	for i=0, nBC-1 {IPSC_vec[i] = new Vector ()}
+	sum_EPSC_vec = new Vector ()
+	sum_EPSC_vec.resize (stoptime/dt)
+	sum_EPSC_vec.fill(0)
+	sum_IPSC_vec = new Vector ()
+	sum_IPSC_vec.resize (stoptime/dt)
+	sum_IPSC_vec.fill(0)
+objref PC_file[10], BC_file[10], IPSG_monosynaptic_current_file[10], SEClamp_current_file[10], sum_EPSC_file[10], sum_IPSC_file[10]
+    for i=0, 9 {
+	PC_file[i] = new File()
+    BC_file[i] = new File()
+	IPSG_monosynaptic_current_file[i] = new File()
+	SEClamp_current_file[i] = new File ()
+	sum_EPSC_file[i] = new File ()
+	sum_IPSC_file[i] = new File ()
+	}
+
+
+objref PC[nPC], synapse_pattern[nPC], RNG, synapse[nPC*nAxon], AP, connection_pattern[nPC][nAxon]
+for count=0, nPC-1 {PC[count]= new excitatory_cell()}  // creates 1000 excitatory neurons
+for count=0, nPC-1 {synapse_pattern[count]=new Vector(nAxon,-1000)} //synapse_pattern[nPC] defines a vector. If the value inside the vector == 1, there is a connection between the PC and the axon.
+RNG= new Random(3212)
+
+objref BC[100], synapse_pattern_BC[100], synapse_BC[100*nAxon+nPC*nAxon], connection_pattern_BC[100][nAxon]
+for a=0, nBC-1 BC[a]=new inhibitory_cell() // creates 100 inhibitory neurons
+for count=0, nBC-1 {synapse_pattern_BC[count]=new Vector(nAxon,-1000)} //synapse_pattern_BC[100] defines a vector. If the value inside the vector == 1, there is a connection between the BC and the axon.
+
+objref synapse_pattern_BC_to_PC[nPC], synapse_BC_to_PC[(100*nAxon+nPC*nAxon+100*nPC)*1], connection_pattern_BC_to_PC[nPC][100]
+for count=0, nPC-1 {synapse_pattern_BC_to_PC[count]=new Vector(100,-1000)} //synapse_pattern_BC_to_PC[100] defines a vector. If the value inside the vector == 1, there is a connection between the BC and the PC.
+
+synapse_number=0
+
+// Stim of PC
+access PC[0].soma
+AP= new NetStimm(0.5)
+AP.number = 1e+10
+AP.start = 10
+AP.noise= 0
+AP.interval =1000/3
+
+surface_area = area(0.5)  // approximately 100 square micrometers
+EPSG_PC= 0.018*surface_area*(1e-5)/3
+IPSG_BC_to_PC= 0.2*(1e-6)*(1e3)*50    // 0.2mS/cm² according to Strüber et al 2017, combined with around 5000 square micrometers of PCs surface, and moved from mS to uS for netcon weight unit
+
+//define synpatic connection patterns. When axon[count1] is connected with PC[count], there is a new NetCon object. 
+for count=0, nPC-1 {access PC[count].soma
+					for count1=0, nAxon-1 {a = RNG.binomial(1, connection_probability)
+										   //print a
+										   if (a==1) { synapse[synapse_number]=new Exp2Syn(0.5)
+													   synapse[synapse_number].e=0 //IPSG_reversal of PCs
+													   synapse[synapse_number].tau1=0.1                       //Krause et al 2008 changed to chavlis et al 2017
+													   synapse[synapse_number].tau2=2.5
+													   connection_pattern[count][count1]= new NetCon(AP, synapse[synapse_number], 0, 0, EPSG_PC)									// to change the weight of main input synapses to PC and BC, go to the select_axons procedure and change it there
+													   synapse_pattern[count].x[count1]=synapse_number
+													   if (count==PCnumber){EPSC_vec[count1].record(&synapse[synapse_number].i)}
+													   synapse_number=synapse_number+1
+													   }
+													   }
+													   }
+										 
+//Same as above, for BCs. When axon[count1] is connected with BC[count], there is a new NetCon object.
+for count=0, nBC-1 {access BC[count].soma
+					for count1=0, nAxon-1 {a = RNG.binomial(1, connection_probability)
+									if (a==1) { synapse_BC[synapse_number]=new Exp2Syn(0.5)
+												synapse_BC[synapse_number].e=0 //IPSG_reversal of PCs                                                                              	// IPSG?
+												synapse_BC[synapse_number].tau1=0.1                                    //Krause et al 2008 (Scanziani et Glickfeld 2006?) changed to chavlis et al 2017
+												synapse_BC[synapse_number].tau2=2.5
+												connection_pattern_BC[count][count1]= new NetCon(AP, synapse_BC[synapse_number], 0, 0, EPSG_PC)										// to change the weight of main input synapses to PC and BC, go to the select_axons procedure and change it there
+												synapse_pattern_BC[count].x[count1]=synapse_number                                                                                
+												synapse_number=synapse_number+1}
+												}
+												}
+
+
+// create an inhibitoy synapse from the basket cells to the PCs, with random weight of inhibitory synapses per post-synaptic cell
+objref RanInh, ProbaInhib
+RanInh= new Vector(nPC)
+ProbaInhib= new Vector(nPC)
+for count=0, nPC-1 {RanInh.x[count]=RNG.normal(20, 50)}
+for count=0, nPC-1 {ProbaInhib.x[count]=RNG.binomial(1, 0.4)}
+
+for count=0, nPC-1 {access PC[count].soma
+									for count1=0, nBC-1 {a = RNG.binomial(1, connection_probability)
+														if (a==1) { synapse_BC_to_PC[synapse_number]=new Exp2Syn(0.5)
+																	synapse_BC_to_PC[synapse_number].e=-80 //IPSG_reversal of BCs
+																	synapse_BC_to_PC[synapse_number].tau1=0.26                           //Kraushaar and Jonas 2000                                                                         // 0.17 to 1.8?
+																	synapse_BC_to_PC[synapse_number].tau2=5
+																	BC[count1].soma connection_pattern_BC_to_PC[count][count1]= new NetCon(&v(0.5), synapse_BC_to_PC[synapse_number], 0, 0.7, IPSG_BC_to_PC)            
+																	if ((count1==BCnumber)&&(count==PCnumber)){IPSG_monosynaptic_current_vec.record(&synapse_BC_to_PC[synapse_number].i)}       // Record monosynaptic IPSG from BC[BCnumber] to PC[PCnumber]
+																	synapse_pattern_BC_to_PC[count].x[count1]=synapse_number                                                                                        //STILL RELEVANT for BC to PC SYNAPSES? NO NEED TO SHUT THEM OFF
+																	if (count==PCnumber){IPSC_vec[count1].record(&synapse_BC_to_PC[synapse_number].i)}
+																	synapse_number=synapse_number+1
+																	}
+															}
+					}	
+
+//create a noisy background input to each PC
+objref noise_I[nPC], APrecord10, APtime10, APrecord[nPC], APtime[nPC]
+
+// creates voltage clamp SEClamp to see the compound 
+objref VoltageClamp
+
+for count=0, nPC-1 {access PC[count].soma
+					if (single_cell==0){
+					APrecord[count] = new APCount(0.5)
+					APrecord[count].thresh = 0}
+					
+					if (count == PCclamped) {
+					access PC[PCclamped].soma
+					VoltageClamp = new SEClamp(0.5)
+					VoltageClamp.rs = 0.00000000001  // Set the series resistance to 12 ohms as seen experimentally
+					VoltageClamp.amp1 = -80   // sets the voltage clamp at -80
+					VoltageClamp.dur1 = 0 //stoptime/dt  // Set the duration of the clamp
+					SEClamp_current_vec.record(&VoltageClamp.i) // Records the current from the voltage clamp
+					} else {
+						noise_I[count] = new IClamp(0.5)
+						noise_I[count].del = 0
+						noise_I[count].dur = stoptime/dt
+							}
+					}
+
+
+if (single_cell==1){
+access PC[PCnumber].soma
+APrecord10=new APCount(0.5)
+APrecord10.thresh=0}
+					
+// Create a noisy background input to each BC , and a record to each BC AP
+
+
+objref noise_I2[nBC], APrecord2[nBC], APtime2[nBC], Input
+
+/*
+access PC[PCnumber].soma
+Input=new IClamp(0.5)
+Input.del=1
+Input.dur=200
+Input.amp=-0.01
+*/
+
+for count=0, nBC-1 {access BC[count].soma		
+					noise_I2[count]=new IClamp(0.5)
+					noise_I2[count].del=0
+					noise_I2[count].dur=stoptime/dt
+					APrecord2[count]=new APCount(0.5)
+					APrecord2[count].thresh=0
+					}
+
+					
+SetrandRMPonce=0   // a value that will go to 1 the first time RMP are randomized, so that it doesn't change between trials of the same sweep, but can be reset between sweeps
+
+proc random_RMP(){		
+//create a non-uniform RMP among cells for introducing input-output relationship heterogeneity
+if (SetrandRMPonce==0){
+						for count=0, nPC-1 {access PC[count].soma
+										  e_pas=Vrest_principalneuron+10*RNG.normal(0,0.5)
+										  /*printf("Step %d: e_pas = %g\n", count, e_pas)*/    //to check the value of RMP of each PC
+										  }	   
+						for count=0, nBC-1 {access BC[count].soma
+										  e_pas=e_pas+1*RNG.normal(0,0.3)}
+								}
+					SetrandRMPonce=1                 // Setting that value to 1 will skip the randomization for the next step of current within, but resetting it to 0 at the end of the sweep will let it randomize it again on next sweep
+					}
+
+
+
+// Setting membrane potential records
+
+// Record membrane potentials from PC[PCnumber] and BC[BCnumber]
+proc record_membrane_potentials() {
+
+	// Record membrane potential of PC[PCnumber]
+    access PC[PCnumber].soma
+    PC_vec.record(&v(0.5))
+
+    // Record membrane potential of BC[BCnumber]
+    access BC[BCnumber].soma
+    BC_vec.record(&v(0.5))
+
+}
+
+proc save_to_text_files() {
+    
+if(xx==0){
+	PC_file[0].wopen("PC_membrane_potentials0.txt")
+    BC_file[0].wopen("BC_membrane_potentials0.txt")
+	IPSG_monosynaptic_current_file[0].wopen("IPSG_monosynaptic_current0.txt")
+	SEClamp_current_file[0].wopen("SEClamp_current0.txt")
+	sum_EPSC_file[xx].wopen("sum_EPSC_0.txt")
+	sum_IPSC_file[xx].wopen("sum_IPSC_0.txt")
+
+	for i = 0, nAxon-1 {
+		if (EPSC_vec[i].size!=0){
+			for m = 0, sum_EPSC_vec.size-1 {
+				sum_EPSC_vec.x[m]=sum_EPSC_vec.x[m]+EPSC_vec[i].x[m]
+			}
+		}
+	}
+
+	for i = 0, nBC-1 {
+		if (IPSC_vec[i].size!=0){
+			for m = 0, sum_IPSC_vec.size-1 {
+				sum_IPSC_vec.x[m]=sum_IPSC_vec.x[m]+IPSC_vec[i].x[m]
+			}
+		}
+	}
+	
+	for i = 0, sum_EPSC_vec.size()-1 {
+        sum_EPSC_file[0].printf("%g\n", sum_EPSC_vec.x[i])
+    }
+	
+	for i = 0, sum_IPSC_vec.size()-1 {
+        sum_IPSC_file[0].printf("%g\n", sum_IPSC_vec.x[i])
+    }
+	
+	for i = 0, PC_vec.size()-1 {
+        PC_file[0].printf("%g\n", PC_vec.x[i])
+    }
+
+    for i = 0, BC_vec.size()-1 {
+        BC_file[0].printf("%g\n", BC_vec.x[i])
+    }
+	
+	for i = 0, IPSG_monosynaptic_current_vec.size()-1 {
+        IPSG_monosynaptic_current_file[0].printf("%g\n", IPSG_monosynaptic_current_vec.x[i])
+    }
+	
+	for i = 0, SEClamp_current_vec.size()-1 {
+        SEClamp_current_file[0].printf("%g\n", SEClamp_current_vec.x[i])
+    }
+	
+	sum_EPSC_vec.fill(0)
+	sum_IPSC_vec.fill(0)
+	PC_vec.fill(0)
+	BC_vec.fill(0)
+	IPSG_monosynaptic_current_vec.fill(0)
+	SEClamp_current_vec.fill(0)
+	
+
+    PC_file[0].close()
+    BC_file[0].close()
+	IPSG_monosynaptic_current_file[0].close()
+	SEClamp_current_file[0].close()
+	sum_EPSC_file[xx].close()
+	sum_IPSC_file[xx].close()
+	}
+
+if(xx==1){
+	PC_file[1].wopen("PC_membrane_potentials1.txt")
+    BC_file[1].wopen("BC_membrane_potentials1.txt")
+	IPSG_monosynaptic_current_file[1].wopen("IPSG_monosynaptic_current1.txt")
+	SEClamp_current_file[1].wopen("SEClamp_current1.txt")
+	sum_EPSC_file[xx].wopen("sum_EPSC_1.txt")
+	sum_IPSC_file[xx].wopen("sum_IPSC_1.txt")
+
+	for i = 0, nAxon-1 {
+		if (EPSC_vec[i].size!=0){
+			for m = 0, sum_EPSC_vec.size-1 {
+				sum_EPSC_vec.x[m]=sum_EPSC_vec.x[m]+EPSC_vec[i].x[m]
+			}
+		}
+	}
+
+	for i = 0, nBC-1 {
+		if (IPSC_vec[i].size!=0){
+			for m = 0, sum_IPSC_vec.size-1 {
+				sum_IPSC_vec.x[m]=sum_IPSC_vec.x[m]+IPSC_vec[i].x[m]
+			}
+		}
+	}
+	
+	for i = 0, sum_EPSC_vec.size()-1 {
+        sum_EPSC_file[xx].printf("%g\n", sum_EPSC_vec.x[i])
+    }
+	
+	for i = 0, sum_IPSC_vec.size()-1 {
+        sum_IPSC_file[xx].printf("%g\n", sum_IPSC_vec.x[i])
+    }
+
+    for i = 0, PC_vec.size()-1 {
+        PC_file[1].printf("%g\n", PC_vec.x[i])
+    }
+
+    for i = 0, BC_vec.size()-1 {
+        BC_file[1].printf("%g\n", BC_vec.x[i])
+    }
+	
+	for i = 0, IPSG_monosynaptic_current_vec.size()-1 {
+        IPSG_monosynaptic_current_file[1].printf("%g\n", IPSG_monosynaptic_current_vec.x[i])
+    }
+
+	for i = 0, SEClamp_current_vec.size()-1 {
+        SEClamp_current_file[1].printf("%g\n", SEClamp_current_vec.x[i])
+    }
+	
+	sum_EPSC_vec.fill(0)
+	sum_IPSC_vec.fill(0)
+	PC_vec.fill(0)
+	BC_vec.fill(0)
+	IPSG_monosynaptic_current_vec.fill(0)
+	SEClamp_current_vec.fill(0)
+
+    PC_file[1].close()
+    BC_file[1].close()
+	IPSG_monosynaptic_current_file[1].close()
+	SEClamp_current_file[1].close()
+	sum_EPSC_file[xx].close()
+	sum_IPSC_file[xx].close()
+	}
+
+if(xx==2){
+	PC_file[2].wopen("PC_membrane_potentials2.txt")
+    BC_file[2].wopen("BC_membrane_potentials2.txt")
+	IPSG_monosynaptic_current_file[2].wopen("IPSG_monosynaptic_current2.txt")
+	SEClamp_current_file[2].wopen("SEClamp_current2.txt")
+	sum_EPSC_file[xx].wopen("sum_EPSC_2.txt")
+	sum_IPSC_file[xx].wopen("sum_IPSC_2.txt")
+
+	for i = 0, nAxon-1 {
+		if (EPSC_vec[i].size!=0){
+			for m = 0, sum_EPSC_vec.size-1 {
+				sum_EPSC_vec.x[m]=sum_EPSC_vec.x[m]+EPSC_vec[i].x[m]
+			}
+		}
+	}
+
+	for i = 0, nBC-1 {
+		if (IPSC_vec[i].size!=0){
+			for m = 0, sum_IPSC_vec.size-1 {
+				sum_IPSC_vec.x[m]=sum_IPSC_vec.x[m]+IPSC_vec[i].x[m]
+			}
+		}
+	}
+	
+	for i = 0, sum_EPSC_vec.size()-1 {
+        sum_EPSC_file[xx].printf("%g\n", sum_EPSC_vec.x[i])
+    }
+	
+	for i = 0, sum_IPSC_vec.size()-1 {
+        sum_IPSC_file[xx].printf("%g\n", sum_IPSC_vec.x[i])
+    }
+
+    for i = 0, PC_vec.size()-1 {
+        PC_file[2].printf("%g\n", PC_vec.x[i])
+    }
+
+    for i = 0, BC_vec.size()-1 {
+        BC_file[2].printf("%g\n", BC_vec.x[i])
+    }
+	
+	for i = 0, IPSG_monosynaptic_current_vec.size()-1 {
+        IPSG_monosynaptic_current_file[2].printf("%g\n", IPSG_monosynaptic_current_vec.x[i])
+    }
+
+	for i = 0, SEClamp_current_vec.size()-1 {
+        SEClamp_current_file[2].printf("%g\n", SEClamp_current_vec.x[i])
+    }
+	
+	sum_EPSC_vec.fill(0)
+	sum_IPSC_vec.fill(0)
+	PC_vec.fill(0)
+	BC_vec.fill(0)
+	IPSG_monosynaptic_current_vec.fill(0)
+	SEClamp_current_vec.fill(0)
+
+    PC_file[2].close()
+    BC_file[2].close()
+	IPSG_monosynaptic_current_file[2].close()
+	SEClamp_current_file[2].close()
+	sum_EPSC_file[xx].close()
+	sum_IPSC_file[xx].close()
+	}
+
+if(xx==3){
+	PC_file[3].wopen("PC_membrane_potentials3.txt")
+    BC_file[3].wopen("BC_membrane_potentials3.txt")
+	IPSG_monosynaptic_current_file[3].wopen("IPSG_monosynaptic_current3.txt")
+	SEClamp_current_file[3].wopen("SEClamp_current3.txt")
+	sum_EPSC_file[xx].wopen("sum_EPSC_3.txt")
+	sum_IPSC_file[xx].wopen("sum_IPSC_3.txt")
+
+	for i = 0, nAxon-1 {
+		if (EPSC_vec[i].size!=0){
+			for m = 0, sum_EPSC_vec.size-1 {
+				sum_EPSC_vec.x[m]=sum_EPSC_vec.x[m]+EPSC_vec[i].x[m]
+			}
+		}
+	}
+
+	for i = 0, nBC-1 {
+		if (IPSC_vec[i].size!=0){
+			for m = 0, sum_IPSC_vec.size-1 {
+				sum_IPSC_vec.x[m]=sum_IPSC_vec.x[m]+IPSC_vec[i].x[m]
+			}
+		}
+	}
+	
+	for i = 0, sum_EPSC_vec.size()-1 {
+        sum_EPSC_file[xx].printf("%g\n", sum_EPSC_vec.x[i])
+    }
+	
+	for i = 0, sum_IPSC_vec.size()-1 {
+        sum_IPSC_file[xx].printf("%g\n", sum_IPSC_vec.x[i])
+    }
+
+    for i = 0, PC_vec.size()-1 {
+        PC_file[3].printf("%g\n", PC_vec.x[i])
+    }
+
+    for i = 0, BC_vec.size()-1 {
+        BC_file[3].printf("%g\n", BC_vec.x[i])
+    }
+	
+	for i = 0, IPSG_monosynaptic_current_vec.size()-1 {
+        IPSG_monosynaptic_current_file[3].printf("%g\n", IPSG_monosynaptic_current_vec.x[i])
+    }
+
+	for i = 0, SEClamp_current_vec.size()-1 {
+        SEClamp_current_file[3].printf("%g\n", SEClamp_current_vec.x[i])
+    }
+	
+	sum_EPSC_vec.fill(0)
+	sum_IPSC_vec.fill(0)
+	PC_vec.fill(0)
+	BC_vec.fill(0)
+	IPSG_monosynaptic_current_vec.fill(0)
+	SEClamp_current_vec.fill(0)
+
+    PC_file[3].close()
+    BC_file[3].close()
+	IPSG_monosynaptic_current_file[3].close()
+	SEClamp_current_file[3].close()
+	sum_EPSC_file[xx].close()
+	sum_IPSC_file[xx].close()
+	}
+
+if(xx==4){
+	PC_file[4].wopen("PC_membrane_potentials4.txt")
+    BC_file[4].wopen("BC_membrane_potentials4.txt")
+	IPSG_monosynaptic_current_file[4].wopen("IPSG_monosynaptic_current4.txt")
+	SEClamp_current_file[4].wopen("SEClamp_current4.txt")
+	sum_EPSC_file[xx].wopen("sum_EPSC_4.txt")
+	sum_IPSC_file[xx].wopen("sum_IPSC_4.txt")
+
+	for i = 0, nAxon-1 {
+		if (EPSC_vec[i].size!=0){
+			for m = 0, sum_EPSC_vec.size-1 {
+				sum_EPSC_vec.x[m]=sum_EPSC_vec.x[m]+EPSC_vec[i].x[m]
+			}
+		}
+	}
+
+	for i = 0, nBC-1 {
+		if (IPSC_vec[i].size!=0){
+			for m = 0, sum_IPSC_vec.size-1 {
+				sum_IPSC_vec.x[m]=sum_IPSC_vec.x[m]+IPSC_vec[i].x[m]
+			}
+		}
+	}
+	
+	for i = 0, sum_EPSC_vec.size()-1 {
+        sum_EPSC_file[xx].printf("%g\n", sum_EPSC_vec.x[i])
+    }
+	
+	for i = 0, sum_IPSC_vec.size()-1 {
+        sum_IPSC_file[xx].printf("%g\n", sum_IPSC_vec.x[i])
+    }
+
+    for i = 0, PC_vec.size()-1 {
+        PC_file[4].printf("%g\n", PC_vec.x[i])
+    }
+
+    for i = 0, BC_vec.size()-1 {
+        BC_file[4].printf("%g\n", BC_vec.x[i])
+    }
+	
+	for i = 0, IPSG_monosynaptic_current_vec.size()-1 {
+        IPSG_monosynaptic_current_file[4].printf("%g\n", IPSG_monosynaptic_current_vec.x[i])
+    }
+
+	for i = 0, SEClamp_current_vec.size()-1 {
+        SEClamp_current_file[4].printf("%g\n", SEClamp_current_vec.x[i])
+    }
+	
+	sum_EPSC_vec.fill(0)
+	sum_IPSC_vec.fill(0)
+	PC_vec.fill(0)
+	BC_vec.fill(0)
+	IPSG_monosynaptic_current_vec.fill(0)
+	SEClamp_current_vec.fill(0)
+
+    PC_file[4].close()
+    BC_file[4].close()
+	IPSG_monosynaptic_current_file[4].close()
+	SEClamp_current_file[4].close()
+	sum_EPSC_file[xx].close()
+	sum_IPSC_file[xx].close()
+	}
+
+if(xx==5){
+	PC_file[5].wopen("PC_membrane_potentials5.txt")
+    BC_file[5].wopen("BC_membrane_potentials5.txt")
+	IPSG_monosynaptic_current_file[5].wopen("IPSG_monosynaptic_current5.txt")
+	SEClamp_current_file[5].wopen("SEClamp_current5.txt")
+	sum_EPSC_file[xx].wopen("sum_EPSC_5.txt")
+	sum_IPSC_file[xx].wopen("sum_IPSC_5.txt")
+
+	for i = 0, nAxon-1 {
+		if (EPSC_vec[i].size!=0){
+			for m = 0, sum_EPSC_vec.size-1 {
+				sum_EPSC_vec.x[m]=sum_EPSC_vec.x[m]+EPSC_vec[i].x[m]
+			}
+		}
+	}
+
+	for i = 0, nBC-1 {
+		if (IPSC_vec[i].size!=0){
+			for m = 0, sum_IPSC_vec.size-1 {
+				sum_IPSC_vec.x[m]=sum_IPSC_vec.x[m]+IPSC_vec[i].x[m]
+			}
+		}
+	}
+	
+	for i = 0, sum_EPSC_vec.size()-1 {
+        sum_EPSC_file[xx].printf("%g\n", sum_EPSC_vec.x[i])
+    }
+	
+	for i = 0, sum_IPSC_vec.size()-1 {
+        sum_IPSC_file[xx].printf("%g\n", sum_IPSC_vec.x[i])
+    }
+
+    for i = 0, PC_vec.size()-1 {
+        PC_file[5].printf("%g\n", PC_vec.x[i])
+    }
+
+    for i = 0, BC_vec.size()-1 {
+        BC_file[5].printf("%g\n", BC_vec.x[i])
+    }
+	
+	for i = 0, IPSG_monosynaptic_current_vec.size()-1 {
+        IPSG_monosynaptic_current_file[5].printf("%g\n", IPSG_monosynaptic_current_vec.x[i])
+    }
+
+	for i = 0, SEClamp_current_vec.size()-1 {
+        SEClamp_current_file[5].printf("%g\n", SEClamp_current_vec.x[i])
+    }
+	
+	sum_EPSC_vec.fill(0)
+	sum_IPSC_vec.fill(0)
+	PC_vec.fill(0)
+	BC_vec.fill(0)
+	IPSG_monosynaptic_current_vec.fill(0)
+	SEClamp_current_vec.fill(0)
+
+    PC_file[5].close()
+    BC_file[5].close()
+	IPSG_monosynaptic_current_file[5].close()
+	SEClamp_current_file[5].close()
+	sum_EPSC_file[xx].close()
+	sum_IPSC_file[xx].close()
+	}
+
+if(xx==6){
+	PC_file[6].wopen("PC_membrane_potentials6.txt")
+    BC_file[6].wopen("BC_membrane_potentials6.txt")
+	IPSG_monosynaptic_current_file[6].wopen("IPSG_monosynaptic_current6.txt")
+	SEClamp_current_file[6].wopen("SEClamp_current6.txt")
+	sum_EPSC_file[xx].wopen("sum_EPSC_6.txt")
+	sum_IPSC_file[xx].wopen("sum_IPSC_6.txt")
+
+	for i = 0, nAxon-1 {
+		if (EPSC_vec[i].size!=0){
+			for m = 0, sum_EPSC_vec.size-1 {
+				sum_EPSC_vec.x[m]=sum_EPSC_vec.x[m]+EPSC_vec[i].x[m]
+			}
+		}
+	}
+
+	for i = 0, nBC-1 {
+		if (IPSC_vec[i].size!=0){
+			for m = 0, sum_IPSC_vec.size-1 {
+				sum_IPSC_vec.x[m]=sum_IPSC_vec.x[m]+IPSC_vec[i].x[m]
+			}
+		}
+	}
+	
+	for i = 0, sum_EPSC_vec.size()-1 {
+        sum_EPSC_file[xx].printf("%g\n", sum_EPSC_vec.x[i])
+    }
+	
+	for i = 0, sum_IPSC_vec.size()-1 {
+        sum_IPSC_file[xx].printf("%g\n", sum_IPSC_vec.x[i])
+    }
+
+    for i = 0, PC_vec.size()-1 {
+        PC_file[6].printf("%g\n", PC_vec.x[i])
+    }
+
+    for i = 0, BC_vec.size()-1 {
+        BC_file[6].printf("%g\n", BC_vec.x[i])
+    }
+	
+	for i = 0, IPSG_monosynaptic_current_vec.size()-1 {
+        IPSG_monosynaptic_current_file[6].printf("%g\n", IPSG_monosynaptic_current_vec.x[i])
+    }
+
+	for i = 0, SEClamp_current_vec.size()-1 {
+        SEClamp_current_file[6].printf("%g\n", SEClamp_current_vec.x[i])
+    }
+	
+	sum_EPSC_vec.fill(0)
+	sum_IPSC_vec.fill(0)
+	PC_vec.fill(0)
+	BC_vec.fill(0)
+	IPSG_monosynaptic_current_vec.fill(0)
+	SEClamp_current_vec.fill(0)
+	
+	PC_file[6].close()
+    BC_file[6].close()
+	IPSG_monosynaptic_current_file[6].close()
+	SEClamp_current_file[6].close()
+	sum_EPSC_file[xx].close()
+	sum_IPSC_file[xx].close()
+	}
+
+if(xx==7){
+	PC_file[7].wopen("PC_membrane_potentials7.txt")
+    BC_file[7].wopen("BC_membrane_potentials7.txt")
+	IPSG_monosynaptic_current_file[7].wopen("IPSG_monosynaptic_current7.txt")
+	SEClamp_current_file[7].wopen("SEClamp_current7.txt")
+	sum_EPSC_file[xx].wopen("sum_EPSC_7.txt")
+	sum_IPSC_file[xx].wopen("sum_IPSC_7.txt")
+
+	for i = 0, nAxon-1 {
+		if (EPSC_vec[i].size!=0){
+			for m = 0, sum_EPSC_vec.size-1 {
+				sum_EPSC_vec.x[m]=sum_EPSC_vec.x[m]+EPSC_vec[i].x[m]
+			}
+		}
+	}
+
+	for i = 0, nBC-1 {
+		if (IPSC_vec[i].size!=0){
+			for m = 0, sum_IPSC_vec.size-1 {
+				sum_IPSC_vec.x[m]=sum_IPSC_vec.x[m]+IPSC_vec[i].x[m]
+			}
+		}
+	}
+	
+	for i = 0, sum_EPSC_vec.size()-1 {
+        sum_EPSC_file[xx].printf("%g\n", sum_EPSC_vec.x[i])
+    }
+	
+	for i = 0, sum_IPSC_vec.size()-1 {
+        sum_IPSC_file[xx].printf("%g\n", sum_IPSC_vec.x[i])
+    }
+
+    for i = 0, PC_vec.size()-1 {
+        PC_file[7].printf("%g\n", PC_vec.x[i])
+    }
+
+    for i = 0, BC_vec.size()-1 {
+        BC_file[7].printf("%g\n", BC_vec.x[i])
+    }
+	
+	for i = 0, IPSG_monosynaptic_current_vec.size()-1 {
+        IPSG_monosynaptic_current_file[7].printf("%g\n", IPSG_monosynaptic_current_vec.x[i])
+    }
+
+	for i = 0, SEClamp_current_vec.size()-1 {
+        SEClamp_current_file[7].printf("%g\n", SEClamp_current_vec.x[i])
+    }
+	
+	sum_EPSC_vec.fill(0)
+	sum_IPSC_vec.fill(0)
+	PC_vec.fill(0)
+	BC_vec.fill(0)
+	IPSG_monosynaptic_current_vec.fill(0)
+	SEClamp_current_vec.fill(0)
+
+    PC_file[7].close()
+    BC_file[7].close()
+	IPSG_monosynaptic_current_file[7].close()
+	SEClamp_current_file[7].close()
+	sum_EPSC_file[xx].close()
+	sum_IPSC_file[xx].close()
+	}
+
+if(xx==8){
+	PC_file[8].wopen("PC_membrane_potentials8.txt")
+    BC_file[8].wopen("BC_membrane_potentials8.txt")
+	IPSG_monosynaptic_current_file[8].wopen("IPSG_monosynaptic_current8.txt")
+	SEClamp_current_file[8].wopen("SEClamp_current8.txt")
+	sum_EPSC_file[xx].wopen("sum_EPSC_8.txt")
+	sum_IPSC_file[xx].wopen("sum_IPSC_8.txt")
+
+	for i = 0, nAxon-1 {
+		if (EPSC_vec[i].size!=0){
+			for m = 0, sum_EPSC_vec.size-1 {
+				sum_EPSC_vec.x[m]=sum_EPSC_vec.x[m]+EPSC_vec[i].x[m]
+			}
+		}
+	}
+
+	for i = 0, nBC-1 {
+		if (IPSC_vec[i].size!=0){
+			for m = 0, sum_IPSC_vec.size-1 {
+				sum_IPSC_vec.x[m]=sum_IPSC_vec.x[m]+IPSC_vec[i].x[m]
+			}
+		}
+	}
+	
+	for i = 0, sum_EPSC_vec.size()-1 {
+        sum_EPSC_file[xx].printf("%g\n", sum_EPSC_vec.x[i])
+    }
+	
+	for i = 0, sum_IPSC_vec.size()-1 {
+        sum_IPSC_file[xx].printf("%g\n", sum_IPSC_vec.x[i])
+    }
+
+    for i = 0, PC_vec.size()-1 {
+        PC_file[8].printf("%g\n", PC_vec.x[i])
+    }
+
+    for i = 0, BC_vec.size()-1 {
+        BC_file[8].printf("%g\n", BC_vec.x[i])
+    }
+	
+	for i = 0, IPSG_monosynaptic_current_vec.size()-1 {
+        IPSG_monosynaptic_current_file[8].printf("%g\n", IPSG_monosynaptic_current_vec.x[i])
+    }
+
+	for i = 0, SEClamp_current_vec.size()-1 {
+        SEClamp_current_file[8].printf("%g\n", SEClamp_current_vec.x[i])
+    }
+	
+	sum_EPSC_vec.fill(0)
+	sum_IPSC_vec.fill(0)
+	PC_vec.fill(0)
+	BC_vec.fill(0)
+	IPSG_monosynaptic_current_vec.fill(0)
+	SEClamp_current_vec.fill(0)
+
+    PC_file[8].close()
+    BC_file[8].close()
+	IPSG_monosynaptic_current_file[8].close()
+	SEClamp_current_file[8].close()
+	sum_EPSC_file[xx].close()
+	sum_IPSC_file[xx].close()
+	}
+
+if(xx==9){
+	PC_file[9].wopen("PC_membrane_potentials9.txt")
+    BC_file[9].wopen("BC_membrane_potentials9.txt")
+	IPSG_monosynaptic_current_file[9].wopen("IPSG_monosynaptic_current9.txt")
+	SEClamp_current_file[9].wopen("SEClamp_current9.txt")
+	sum_EPSC_file[xx].wopen("sum_EPSC_9.txt")
+	sum_IPSC_file[xx].wopen("sum_IPSC_9.txt")
+
+	for i = 0, nAxon-1 {
+		if (EPSC_vec[i].size!=0){
+			for m = 0, sum_EPSC_vec.size-1 {
+				sum_EPSC_vec.x[m]=sum_EPSC_vec.x[m]+EPSC_vec[i].x[m]
+			}
+		}
+	}
+
+	for i = 0, nBC-1 {
+		if (IPSC_vec[i].size!=0){
+			for m = 0, sum_IPSC_vec.size-1 {
+				sum_IPSC_vec.x[m]=sum_IPSC_vec.x[m]+IPSC_vec[i].x[m]
+			}
+		}
+	}
+	
+	for i = 0, sum_EPSC_vec.size()-1 {
+        sum_EPSC_file[xx].printf("%g\n", sum_EPSC_vec.x[i])
+    }
+	
+	for i = 0, sum_IPSC_vec.size()-1 {
+        sum_IPSC_file[xx].printf("%g\n", sum_IPSC_vec.x[i])
+    }
+
+    for i = 0, PC_vec.size()-1 {
+        PC_file[9].printf("%g\n", PC_vec.x[i])
+    }
+
+    for i = 0, BC_vec.size()-1 {
+        BC_file[9].printf("%g\n", BC_vec.x[i])
+    }
+	
+	for i = 0, IPSG_monosynaptic_current_vec.size()-1 {
+        IPSG_monosynaptic_current_file[9].printf("%g\n", IPSG_monosynaptic_current_vec.x[i])
+    }
+
+	for i = 0, SEClamp_current_vec.size()-1 {
+        SEClamp_current_file[9].printf("%g\n", SEClamp_current_vec.x[i])
+    }
+	
+	sum_EPSC_vec.fill(0)
+	sum_IPSC_vec.fill(0)
+	PC_vec.fill(0)
+	BC_vec.fill(0)
+	IPSG_monosynaptic_current_vec.fill(0)
+	SEClamp_current_vec.fill(0)
+
+    PC_file[9].close()
+    BC_file[9].close()
+	IPSG_monosynaptic_current_file[9].close()
+	SEClamp_current_file[9].close()
+	sum_EPSC_file[xx].close()
+	sum_IPSC_file[xx].close()
+	}
+
+}
+
+
+
+		 
+proc init() {tstop = stoptime
+			 finitialize (-75)
+			 random_RMP()
+			 
+			 dt =0.1 
+			 
+			 if (single_cell==0){
+			 for count=0, nPC-1 {APtime[count]= new Vector()
+								 APrecord[count].record(APtime[count])}}
+			 if (single_cell==1){
+			 APtime10= new Vector()
+				APrecord10.record(APtime10)}
+			 for count=0, nBC-1 {APtime2[count]= new Vector()
+								 APrecord2[count].record(APtime2[count])}
+			 for count=0, nPC-1 {for count1=0, nAxon-1 {if (synapse_pattern[count].x[count1]!=-1000) connection_pattern[count][count1].weight=0}} //turn off all synapses from axons to PC
+			 for count=0, nBC-1 {for count1=0, nAxon-1 {if (synapse_pattern_BC[count].x[count1]!=-1000) connection_pattern_BC[count][count1].weight=0}} //turn off all synapses from axon to BC                // Is there a need to shut off BC to PC synapses in a third line?
+			 }
+			 
+//select an axon, all the synapses of the axon will be activated			 
+proc select_axons() {for count1=0, nAxon-1{
+										  a= $1
+										  b=RNG.binomial(1, a)
+										  //print b
+										  if (b==1) {for count=0, nPC-1 {if (synapse_pattern[count].x[count1]!=-1000) connection_pattern[count][count1].weight= 1.1*EPSG_PC}
+													 for count=0, nBC-1 {if (synapse_pattern_BC[count].x[count1]!=-1000) connection_pattern_BC[count][count1].weight= 0.9*EPSG_PC}
+													}
+										  
+										 }
+										  
+										  
+					}
+					
+noise_count=0
+proc simulate() {time_count=0
+				 init()
+				 select_axons(Axon_probability)
+				 total_sample=stoptime/dt
+				 progress = 10
+				 while (time_count<total_sample) { if (noise_count<=1/dt) {for count2=0, nPC-1 { if (count2!=PCclamped){noise_I[count2].amp=0.0015*RNG.discunif(-100, 100)/100 
+																		noise_count=0}}
+																		for count3=0, nBC-1 {noise_I2[count3].amp=0.0015*RNG.discunif(-100, 100)/100 
+																		noise_count=0}
+																		}
+												fadvance() 
+												/*if (time_count>progress/100*total_sample) { print  progress, "% progress" progress=progress+10}*/
+												noise_count=noise_count+1
+												time_count=time_count+1
+											   // print time_count, total_sample
+											  }
+
+		}
+		
+
+				objref IO, input_output[10]
+				IO = new File()
+				
+for sweep=0, 29 {
+				
+				for xx=0, 9 {Axon_probability=0.1*(xx+1)
+							 if (sweep==sweep_to_record_at){ record_membrane_potentials()} //activate the recordings at the sweep and the input value I want to record from
+							 simulate()
+							 if (sweep==sweep_to_record_at){ save_to_text_files()} //print out the recordings at the sweep and the input value I recorded from
+							 AP_probability=0
+							 AP_probability2=0
+							 
+							 if (single_cell==0){for yy=0, nPC-1 {if (APtime[yy].size!=0) {AP_probability=AP_probability+1}}}
+							 if (single_cell==1){if (APtime10.size!=0) {AP_probability=AP_probability+1}}
+							 for zz=0, nBC-1 {if (APtime2[zz].size!=0) {AP_probability2=AP_probability2+1}}
+							 if (single_cell==0){print "APPC = ", AP_probability/nPC, "APBC = ", AP_probability2/nBC}
+							 if (single_cell==1){print "APPC = ", AP_probability, "APBC = ", AP_probability2/nBC}
+
+							 
+							 }
+
+						 
+				print "finished trace", sweep
+				//SetrandRMPonce=0       // set the value once again to 0, so that RMP are randomized once again, but actually we don't want that, we want a network that doesn't change config between sweep, so it was taken out
+				}				
